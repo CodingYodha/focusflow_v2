@@ -1,6 +1,7 @@
 # app.py
 import streamlit as st
 import google.generativeai as genai
+from google.generativeai.types import FunctionDeclaration
 from datetime import datetime
 import datetime as dt # For timezone calculations
 import json
@@ -176,35 +177,39 @@ def process_prompt(user_prompt):
                             
                             response_placeholder.markdown("🤔 Processing results...")
                             
-                            # --- SIMPLIFIED FUNCTION RESPONSE HANDLING ---
-                            # Create function response for the AI
-                            function_response_parts = [genai.Part(
-                                function_response=genai.protos.FunctionResponse(
-                                    name=tool_name,
-                                    response={"result": str(tool_response)}
-                                )
-                            )]
-                            
-                            # Send function result back to AI with timeout check
-                            if time.time() - start_time > timeout:
-                                raise TimeoutError("AI response timed out")
+                            # --- FIXED FUNCTION RESPONSE HANDLING ---
+                            # Use the correct way to send function responses
+                            try:
+                                # Method 1: Try the newer API structure
+                                function_response = {
+                                    "function_call": {
+                                        "name": tool_name,
+                                        "response": {"result": str(tool_response)}
+                                    }
+                                }
                                 
-                            final_response = st.session_state.chat_session.send_message(
-                                genai.Content(parts=function_response_parts)
-                            )
-                            
-                            if final_response and final_response.text:
-                                assistant_response = final_response.text
-                            else:
-                                # Fallback if AI doesn't respond properly
-                                if tool_name == "get_todays_events":
-                                    assistant_response = f"Here's what I found for today:\n\n{tool_response}"
-                                elif tool_name == "add_event":
-                                    assistant_response = f"Event scheduling result: {tool_response}"
-                                elif tool_name == "check_for_conflicts":
-                                    assistant_response = f"Conflict check result: {tool_response}"
+                                final_response = st.session_state.chat_session.send_message(
+                                    f"Function {tool_name} returned: {str(tool_response)}"
+                                )
+                                
+                                if final_response and final_response.text:
+                                    assistant_response = final_response.text
                                 else:
-                                    assistant_response = f"Function {tool_name} completed: {tool_response}"
+                                    raise Exception("No AI response received")
+                                    
+                            except Exception as ai_error:
+                                # Fallback: Format the response manually
+                                if tool_name == "get_todays_events":
+                                    if "No events" in str(tool_response) or not tool_response or str(tool_response).strip() == "":
+                                        assistant_response = "📅 Good news! You have no events scheduled for today. It's a free day for you to focus on whatever you'd like! ✨"
+                                    else:
+                                        assistant_response = f"📅 Here's your schedule for today, {datetime.now().strftime('%B %d, %Y')}:\n\n{tool_response}"
+                                elif tool_name == "add_event":
+                                    assistant_response = f"✅ Event scheduling result: {tool_response}"
+                                elif tool_name == "check_for_conflicts":
+                                    assistant_response = f"🔍 Conflict check result: {tool_response}"
+                                else:
+                                    assistant_response = f"✅ {tool_name.replace('_', ' ').title()} completed: {tool_response}"
                             
                             # Award points for successful task scheduling
                             if tool_name == "add_event" and ("successfully" in str(tool_response).lower() or "added" in str(tool_response).lower()):
