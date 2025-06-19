@@ -1,75 +1,96 @@
 # gamification.py
 import streamlit as st
+from datetime import datetime, timedelta
 
-# Define badge criteria: {badge_name: (description, icon, condition_function)}
-BADGE_CRITERIA = {
-    "First Task": ("Complete your first task", "🥇", lambda s: s.tasks_completed == 1),
-    "Task Master": ("Complete 5 tasks", "🏆", lambda s: s.tasks_completed == 5),
-    "Scheduling Pro": ("Complete 10 tasks", "🚀", lambda s: s.tasks_completed == 10),
-    "3-Day Streak": ("Maintain a 3-day streak", "🔥", lambda s: s.streak >= 3),
-}
-
-XP_PER_TASK = 100
+# --- CONFIGURATION ---
+XP_PER_TASK_SCHEDULED = 100
+XP_PER_TODO_COMPLETED = 25
+XP_PER_FOCUS_SESSION = 200
 XP_FOR_LEVEL_UP = 500
 
-def add_xp(xp_to_add):
-    """Adds XP and handles leveling up."""
-    st.session_state.xp += xp_to_add
-    leveled_up = False
+STREAK_TIMEFRAME_HOURS = 36 # Allow 1.5 days between tasks to maintain a streak
+
+# --- QUESTS ---
+# {quest_id: (description, goal, reward_xp, progress_check_function)}
+QUESTS = {
+    "first_quest": ("Schedule your first 3 tasks", 3, 300, lambda s: s.tasks_completed),
+    "pomodoro_pro": ("Complete 5 Focus Sessions", 5, 500, lambda s: s.get("focus_sessions_completed", 0)),
+    "weekly_warrior": ("Maintain a 7-day streak", 7, 1000, lambda s: s.streak)
+}
+
+def initialize_gamification():
+    """Initializes all gamification stats in session_state if they don't exist."""
+    defaults = {
+        "xp": 0, "level": 1, "tasks_completed": 0, "streak": 0,
+        "last_task_timestamp": None, "completed_quests": [],
+        "focus_sessions_completed": 0, "todos_completed": 0
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+def award_xp(amount, event_type="task"):
+    """Awards XP, handles leveling up, and updates streaks."""
+    feedback = []
+    st.session_state.xp += amount
+    feedback.append(f"You earned {amount} XP!")
+
+    # Level Up Logic
     while st.session_state.xp >= XP_FOR_LEVEL_UP:
         st.session_state.xp -= XP_FOR_LEVEL_UP
         st.session_state.level += 1
-        leveled_up = True
-    return leveled_up
-
-def update_gamification_stats():
-    """Call this after a task is successfully added."""
-    st.session_state.tasks_completed += 1
-    
-    # Simple streak logic (can be improved with timestamps)
-    # For a hackathon, this simple increment is fine.
-    st.session_state.streak += 1 
-
-    leveled_up = add_xp(XP_PER_TASK)
-    new_badges = check_for_new_badges()
-
-    feedback = f"Task added! You earned {XP_PER_TASK} XP. "
-    if leveled_up:
-        feedback += f"Congratulations, you reached Level {st.session_state.level}! "
+        feedback.append(f"🎉 **Level Up!** You've reached Level {st.session_state.level}! 🎉")
         st.balloons()
-    if new_badges:
-        feedback += f"You've unlocked new badge(s): {', '.join(new_badges)}!"
     
-    return feedback
+    # Smart Streak Logic
+    if event_type in ["task", "todo", "focus"]: # Only these activities count for streaks
+        now = datetime.now()
+        if st.session_state.last_task_timestamp:
+            last_time = datetime.fromisoformat(st.session_state.last_task_timestamp)
+            if (now - last_time) > timedelta(hours=STREAK_TIMEFRAME_HOURS):
+                st.session_state.streak = 1 # Reset streak
+                feedback.append("It's been a while! You've started a new streak.")
+            else:
+                # To prevent multiple streak increments on the same day, we check the date
+                if now.date() > last_time.date():
+                    st.session_state.streak += 1
+                    feedback.append(f"🔥 You're on a {st.session_state.streak}-day streak! Keep it up!")
+        else:
+            st.session_state.streak = 1 # First ever task
+            feedback.append("You've started your first streak!")
+        
+        st.session_state.last_task_timestamp = now.isoformat()
 
-def check_for_new_badges():
-    """Checks if the user has met the criteria for any new badges."""
-    newly_earned = []
-    for badge, (desc, icon, condition) in BADGE_CRITERIA.items():
-        if badge not in st.session_state.badges and condition(st.session_state):
-            st.session_state.badges.append(badge)
-            newly_earned.append(f"{icon} {badge}")
-    return newly_earned
+    # Quest Completion Logic
+    for quest_id, (desc, goal, reward, checker) in QUESTS.items():
+        if quest_id not in st.session_state.completed_quests:
+            if checker(st.session_state) >= goal:
+                st.session_state.completed_quests.append(quest_id)
+                st.session_state.xp += reward
+                feedback.append(f"🏆 **Quest Complete:** {desc}! You earned a bonus {reward} XP!")
+
+    return " ".join(feedback)
 
 def display_gamification_dashboard():
     """Renders the gamification stats in the sidebar."""
-    st.sidebar.header("🏆 Your Progress")
+    st.sidebar.header(f"🏆 {st.session_state.get('user_profile',{}).get('name','User')}'s Dashboard")
     
-    # Level and XP
     st.sidebar.metric(label="Level", value=st.session_state.level)
-    st.sidebar.write("XP Progress:")
     st.sidebar.progress(st.session_state.xp / XP_FOR_LEVEL_UP)
     st.sidebar.write(f"{st.session_state.xp} / {XP_FOR_LEVEL_UP} XP")
     
-    # Other Stats
-    st.sidebar.metric(label="Tasks Completed", value=st.session_state.tasks_completed)
-    st.sidebar.metric(label="Current Streak", value=f"{st.session_state.streak} days 🔥")
+    col1, col2 = st.sidebar.columns(2)
+    col1.metric("Streak", f"{st.session_state.streak} 🔥")
+    col2.metric("Tasks", st.session_state.tasks_completed)
     
-    # Badges
-    st.sidebar.subheader("Badges Unlocked")
-    if not st.session_state.badges:
-        st.sidebar.write("No badges yet. Keep going!")
-    else:
-        for badge_name in st.session_state.badges:
-            desc, icon, _ = BADGE_CRITERIA[badge_name]
-            st.sidebar.markdown(f"**{icon} {badge_name}**: {desc}")
+    st.sidebar.subheader("Active Quests")
+    active_quests_found = False
+    for quest_id, (desc, goal, _, checker) in QUESTS.items():
+        if quest_id not in st.session_state.completed_quests:
+            progress = checker(st.session_state)
+            st.sidebar.write(f"**{desc}** ({progress}/{goal})")
+            st.sidebar.progress(progress / goal)
+            active_quests_found = True
+            
+    if not active_quests_found:
+        st.sidebar.info("You've completed all available quests! More coming soon.")

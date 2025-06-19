@@ -15,85 +15,91 @@ CREDENTIALS_FILE = "credentials.json"
 
 @st.cache_resource
 def authenticate_google_calendar():
+    # Authentication logic remains the same...
     creds = None
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-    
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                st.error(f"Error refreshing token: {e}. Deleting token and re-authenticating.")
-                if os.path.exists("token.json"):
-                    os.remove("token.json")
-                creds = None
-        
-        if not creds:
+            creds.refresh(Request())
+        else:
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
-            
         with open("token.json", "w") as token:
             token.write(creds.to_json())
-    
     try:
         service = build("calendar", "v3", credentials=creds)
         return service
     except HttpError as error:
-        st.error(f"An error occurred with Google Calendar API: {error}")
+        st.error(f"An error occurred: {error}")
         return None
 
-def list_upcoming_events(max_results=10):
-    """Lists upcoming events. It gets the service object from session_state."""
-    # --- FIX: Get service from session state, don't accept as argument ---
+def check_for_conflicts(start_time, end_time):
+    """Checks if there are any events in the given time slot."""
     service = st.session_state.get("calendar_service")
-    if not service:
-        return "Error: Google Calendar service is not available. Please authenticate."
+    if not service: return "Error: Not authenticated."
+    
+    events_result = service.events().list(
+        calendarId='primary', 
+        timeMin=start_time,
+        timeMax=end_time,
+        singleEvents=True
+    ).execute()
+    
+    conflicts = events_result.get('items', [])
+    if not conflicts:
+        return "No conflicts found."
+    else:
+        conflict_names = [event['summary'] for event in conflicts]
+        return f"Conflict found: You already have '{', '.join(conflict_names)}' scheduled at this time."
 
-    try:
-        now = dt.datetime.now(timezone.utc).isoformat()
-        
-        events_result = service.events().list(
-            calendarId="primary", timeMin=now, maxResults=max_results,
-            singleEvents=True, orderBy="startTime"
-        ).execute()
-        
-        events = events_result.get("items", [])
-
-        if not events:
-            return "No upcoming events found. Your schedule is clear! ✨"
-        
-        event_list = []
-        for event in events:
-            start_raw = event["start"].get("dateTime", event["start"].get("date"))
-            try:
-                start_dt = dt.datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-                start_formatted = start_dt.strftime("%a, %b %d at %I:%M %p")
-            except ValueError:
-                 start_formatted = start_raw
-            
-            event_list.append(f"- **{event['summary']}** on {start_formatted}")
-            
-        return "Here are your upcoming events:\n" + "\n".join(event_list)
-    except HttpError as error:
-        return f"An error occurred while listing events: {error}"
-
-def add_event(summary, start_time, end_time, location=None, description=None, timezone="America/New_York"):
-    """Adds an event. It gets the service object from session_state."""
-    # --- FIX: Get service from session state, don't accept as argument ---
+def get_todays_events():
+    """Fetches all events scheduled for the current day."""
     service = st.session_state.get("calendar_service")
-    if not service:
-        return "Error: Google Calendar service is not available. Please authenticate."
+    if not service: return "Error: Not authenticated."
+
+    now = dt.datetime.now(timezone.utc)
+    time_min = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    time_max = now.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
+    
+    events = service.events().list(
+        calendarId='primary', timeMin=time_min, timeMax=time_max,
+        singleEvents=True, orderBy='startTime'
+    ).execute().get('items', [])
+
+    if not events:
+        return "Your schedule for today is clear! A perfect day to get things done."
+    
+    event_list = []
+    for event in events:
+        start_raw = event["start"].get("dateTime", event["start"].get("date"))
+        end_raw = event["end"].get("dateTime", event["end"].get("date"))
         
-    try:
-        event = {
-            "summary": summary, "location": location,
-            "description": description or 'Scheduled by FocusFlow V2',
-            "start": {"dateTime": start_time, "timeZone": timezone},
-            "end": {"dateTime": end_time, "timeZone": timezone},
-            "reminders": {"useDefault": False, "overrides": [{"method": "popup", "minutes": 10}]}
-        }
-        created_event = service.events().insert(calendarId="primary", body=event).execute()
-        return f"✅ Event created successfully! You can view it here: {created_event.get('htmlLink')}"
-    except HttpError as error:
-        return f"❌ An error occurred while creating the event: {error}"
+        try:
+            start_dt = dt.datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+            end_dt = dt.datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
+            time_str = f"{start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')}"
+        except ValueError:
+            time_str = "All day"
+        
+        event_list.append(f"- **{event['summary']}** ({time_str})")
+        
+    return "Here is your schedule for today:\n" + "\n".join(event_list)
+
+def add_event(summary, start_time, end_time, description=None, location=None):
+    """Adds a new event to the calendar."""
+    service = st.session_state.get("calendar_service")
+    if not service: return "Error: Not authenticated."
+        
+    user_tz = st.session_state.get('user_profile', {}).get('timezone', 'America/New_York')
+    event = {
+        'summary': summary, 'location': location,
+        'description': description or 'Scheduled by FocusFlow V2',
+        'start': {'dateTime': start_time, 'timeZone': user_tz},
+        'end': {'dateTime': end_time, 'timeZone': user_tz},
+        'reminders': {'useDefault': True},
+    }
+    
+    created_event = service.events().insert(calendarId='primary', body=event).execute()
+    st.session_state.tasks_completed += 1 # Increment task counter
+    return f"Event '{summary}' was successfully added to your calendar."
