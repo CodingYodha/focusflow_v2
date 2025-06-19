@@ -9,6 +9,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import httplib2 
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 CREDENTIALS_FILE = "credentials.json"
@@ -28,7 +29,10 @@ def authenticate_google_calendar():
         with open("token.json", "w") as token:
             token.write(creds.to_json())
     try:
-        service = build("calendar", "v3", credentials=creds)
+        # --- FIX 2: Set a default timeout on the HTTP client ---
+        # This helps prevent hanging connections and can mitigate some SSL issues.
+        http_client = httplib2.Http(timeout=10) # 10 second timeout
+        service = build('calendar', 'v3', credentials=creds, http=http_client)
         return service
     except HttpError as error:
         st.error(f"An error occurred: {error}")
