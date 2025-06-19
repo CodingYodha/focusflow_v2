@@ -8,14 +8,14 @@ sys.path.append('..')
 import gamification
 
 st.set_page_config(page_title="Focus Zone", page_icon="🎯")
-st.title("🎯 The Focus Zone")
-st.write("Complete your to-dos and use the focus timer to boost your productivity and level up!")
-
 # Initialize state if not present
 if 'todos' not in st.session_state:
     st.session_state.todos = []
 if 'timer_running' not in st.session_state:
     st.session_state.timer_running = False
+st.title("🎯 The Focus Zone")
+st.write("Complete your to-dos and use the focus timer to boost your productivity and level up!")
+
 
 col1, col2 = st.columns(2)
 

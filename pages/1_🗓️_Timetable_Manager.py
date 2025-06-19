@@ -12,12 +12,18 @@ import calendar_utils
 
 st.set_page_config(page_title="Timetable Manager", page_icon="🗓️")
 
-st.title("🗓️ Timetable Manager")
-st.write("Upload an image of your class schedule, and I'll help you digitize it!")
-
 # Initialize session state for timetable
 if 'timetable_df' not in st.session_state:
     st.session_state.timetable_df = None
+
+st.title("🗓️ Timetable Manager")
+# Check for authentication from the main app
+if 'calendar_service' not in st.session_state or st.session_state.calendar_service is None:
+    st.warning("Please authenticate on the main 'FocusFlow - Chat' page first to use this feature.")
+    st.stop()
+    
+st.write("Upload an image of your class schedule, and I'll help you digitize it!")
+
 
 uploaded_file = st.file_uploader(
     "Choose a timetable image...", type=["jpg", "jpeg", "png"]
