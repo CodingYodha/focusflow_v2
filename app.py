@@ -2,7 +2,6 @@
 import streamlit as st
 import google.generativeai as genai
 from datetime import datetime
-import datetime as dt
 import pytz
 
 import calendar_utils
@@ -25,8 +24,10 @@ if st.session_state.user_profile is None:
     st.title("Welcome to FocusFlow V2! 🚀")
     with st.form("profile_form"):
         name = st.text_input("What should I call you?")
+        # Using the full list of pytz timezones for user selection
         timezone_options = pytz.common_timezones
-        user_timezone = st.selectbox("What is your timezone?", options=timezone_options, index=timezone_options.index("UTC"))
+        default_index = timezone_options.index('Asia/Kolkata') if 'Asia/Kolkata' in timezone_options else 0
+        user_timezone = st.selectbox("What is your timezone?", options=timezone_options, index=default_index)
         submitted = st.form_submit_button("Save Profile")
         if submitted and name:
             st.session_state.user_profile = {"name": name, "timezone": user_timezone}
@@ -37,50 +38,41 @@ if st.session_state.chat_session is None:
     try:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
         
-        # --- FIX 1: Simplify the 'add_event' tool definition ---
-        # Make the 'description' parameter optional to reduce the chance of a malformed call.
+        # --- FIX: The AI now works with NAIVE time strings ---
         add_event_tool = genai.protos.FunctionDeclaration(
             name="add_event",
-            description="Adds an event to the user's calendar after checking for conflicts.",
+            description="Adds an event to the user's calendar.",
             parameters=genai.protos.Schema(
                 type=genai.protos.Type.OBJECT,
                 properties={
-                    "summary": genai.protos.Schema(type=genai.protos.Type.STRING, description="The title of the event, e.g., 'Study Session' or 'Team Meeting'."),
-                    "start_time": genai.protos.Schema(type=genai.protos.Type.STRING, description="The start time in full ISO 8601 format with timezone offset."),
-                    "end_time": genai.protos.Schema(type=genai.protos.Type.STRING, description="The end time in full ISO 8601 format with timezone offset."),
-                    "description": genai.protos.Schema(type=genai.protos.Type.STRING, description="An optional, more detailed description for the event."),
+                    "summary": genai.protos.Schema(type=genai.protos.Type.STRING, description="The title of the event."),
+                    "start_time_str": genai.protos.Schema(type=genai.protos.Type.STRING, description="The start time as a timezone-NAIVE string in `YYYY-MM-DDTHH:MM:SS` format."),
+                    "end_time_str": genai.protos.Schema(type=genai.protos.Type.STRING, description="The end time as a timezone-NAIVE string in `YYYY-MM-DDTHH:MM:SS` format."),
+                    "description": genai.protos.Schema(type=genai.protos.Type.STRING, description="An optional description."),
                 },
-                required=["summary", "start_time", "end_time"],
+                required=["summary", "start_time_str", "end_time_str"],
             ),
         )
-
-        get_events_tool = genai.protos.FunctionDeclaration(name="get_todays_events", description="Fetches all events scheduled for the current day from the user's calendar.")
-
+        get_events_tool = genai.protos.FunctionDeclaration(name="get_todays_events", description="Fetches all events for today.")
         tools = genai.protos.Tool(function_declarations=[add_event_tool, get_events_tool])
         
-        user_tz_str = st.session_state.user_profile['timezone']
-        user_tz = pytz.timezone(user_tz_str)
-        tz_offset = datetime.now(user_tz).strftime('%z')
-        tz_offset_formatted = f"{tz_offset[:-2]}:{tz_offset[-2:]}"
-
-        # --- FIX 2: More Direct and Forceful System Prompt ---
+        # --- FIX: REWRITTEN SYSTEM PROMPT FOR NAIVE TIME ---
         SYSTEM_PROMPT = f"""
-        You are a function-calling AI model named FocusFlow. You serve a student named {st.session_state.user_profile['name']}.
-        Your user's timezone is `{user_tz_str}`. The current date is {datetime.now().strftime('%Y-%m-%d')}.
+        You are an expert, function-calling AI model. Your sole purpose is to convert user requests into function calls.
+        The current date is {datetime.now().strftime('%Y-%m-%d')}.
 
-        **PRIMARY DIRECTIVE: Your ONLY purpose is to call functions. Do not have conversations.**
+        **CRITICAL, UNBREAKABLE RULES FOR SCHEDULING:**
+        1.  When a user asks to schedule an event (e.g., "schedule study time tomorrow from 4pm to 7pm"), you MUST call the `add_event` function.
+        2.  You MUST calculate the date and time based on the user's prompt.
+        3.  The `start_time_str` and `end_time_str` parameters MUST be strings in the **exact timezone-NAIVE ISO 8601 format**.
+        4.  **CORRECT FORMAT:** `YYYY-MM-DDTHH:MM:SS`
+        5.  **EXAMPLE:** If the user asks to schedule something for 4:00 PM today, your `start_time_str` argument would be `{datetime.now().strftime('%Y-%m-%d')}T16:00:00`.
+        6.  **DO NOT include any timezone information (like 'Z' or '+05:30') in the time strings.**
+        7.  You MUST infer the `summary` from the user's prompt.
+        8.  If any required information is missing, you MUST ask the user for ONLY the missing information.
 
-        **RULE 1: SCHEDULING**
-        - If the user's prompt includes words like 'schedule', 'create', 'add', 'plan', or mentions a time and an activity, you MUST call the `add_event` function.
-        - You MUST infer the `summary` from the user's prompt (e.g., for "plan a study session", summary is "Study Session").
-        - You MUST calculate the `start_time` and `end_time` in the exact ISO 8601 format: `YYYY-MM-DDTHH:MM:SS{tz_offset_formatted}`.
-        - If any required information (`summary`, `start_time`, `end_time`) is missing, you MUST ask the user for ONLY the missing information. DO NOT respond with a generic message. Example: "What should I call this event?" or "What time does this event start?".
-
-        **RULE 2: VIEWING SCHEDULE**
-        - If the user's prompt includes words like 'schedule', 'what's on', 'my day', 'am I busy', you MUST call the `get_todays_events` function.
-
-        **RULE 3: NO GENERIC ANSWERS**
-        - You are forbidden from answering a scheduling or viewing request with plain text. You must always attempt a function call.
+        **RULE FOR VIEWING SCHEDULE:**
+        - If the user asks to see their schedule, you MUST call the `get_todays_events` function.
         """
         
         model = genai.GenerativeModel(model_name="gemini-1.5-flash-latest", tools=[tools], system_instruction=SYSTEM_PROMPT)
@@ -90,6 +82,7 @@ if st.session_state.chat_session is None:
         st.exception(e)
         st.stop()
 
+# The rest of the app logic remains the same as the previous correct version.
 st.title(f"🤖 Hey, {st.session_state.user_profile['name']}! Let's plan your day.")
 gamification.display_gamification_dashboard()
 
@@ -111,7 +104,7 @@ def process_prompt(user_prompt):
         with st.spinner("Thinking..."):
             response = st.session_state.chat_session.send_message(user_prompt)
         if not response.parts:
-            raise ValueError("The AI returned an empty response. This could be due to a content filter.")
+            raise ValueError("The AI returned an empty response.")
         part = response.parts[0]
         if part.function_call:
             function_call = part.function_call
@@ -133,9 +126,6 @@ def process_prompt(user_prompt):
         st.exception(e)
         assistant_response = "I ran into a problem and couldn't complete your request."
     st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-
-if "voice_input_text" not in st.session_state:
-    st.session_state.voice_input_text = ""
 
 if st.session_state.voice_input_text:
     prompt_to_process = st.session_state.voice_input_text
