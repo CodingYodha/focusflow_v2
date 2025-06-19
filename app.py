@@ -4,6 +4,7 @@ import google.generativeai as genai
 from datetime import datetime
 import datetime as dt # For timezone calculations
 import json
+import pytz
 
 import calendar_utils
 import gamification
@@ -50,12 +51,19 @@ if st.session_state.chat_session is None:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
         tools = [calendar_utils.add_event, calendar_utils.get_todays_events, calendar_utils.check_for_conflicts]
 
-        # --- FIX 1: DEFINE SYSTEM PROMPT AND PASS IT CORRECTLY ---
+        # --- FIX 1: IMPROVED TIMEZONE HANDLING ---
         user_tz = st.session_state.user_profile['timezone']
-        # Calculate the current timezone offset string, e.g., "-04:00" or "+05:30"
-        tz_offset_str = datetime.now(dt.timezone.utc).astimezone().strftime('%z')
-        # Insert a colon for ISO 8601 compatibility
-        tz_offset = f"{tz_offset_str[:-2]}:{tz_offset_str[-2:]}"
+        # Get proper timezone offset using pytz
+        try:
+            tz = pytz.timezone(user_tz)
+            now_in_tz = datetime.now(tz)
+            tz_offset = now_in_tz.strftime('%z')
+            # Insert colon for ISO 8601 format
+            tz_offset_formatted = f"{tz_offset[:-2]}:{tz_offset[-2:]}"
+        except Exception as e:
+            st.error(f"Timezone error: {e}")
+            # Fallback to UTC
+            tz_offset_formatted = "+00:00"
 
         SYSTEM_PROMPT = f"""
         You are FocusFlow, an expert AI productivity coach for {st.session_state.user_profile['name']}.
@@ -65,7 +73,7 @@ if st.session_state.chat_session is None:
         When you call the `add_event` function, the `start_time` and `end_time` parameters MUST be in the full ISO 8601 format including the timezone offset.
         - **Correct Format**: `YYYY-MM-DDTHH:MM:SS-HH:MM` or `YYYY-MM-DDTHH:MM:SS+HH:MM`
         - **Example**: For 3 PM today in a timezone 4 hours behind UTC, the format is `2024-08-04T15:00:00-04:00`.
-        - The current user's timezone offset is `{tz_offset}`. You MUST use this offset in your calculations.
+        - The current user's timezone offset is `{tz_offset_formatted}`. You MUST use this offset in your calculations.
         - **You are responsible for calculating this full timestamp. DO NOT ask the user for it.** Convert all natural language times (e.g., "3pm tomorrow", "next Tuesday at noon") into this exact format.
 
         **Conflict Resolution Workflow:**
@@ -99,8 +107,15 @@ if st.session_state.calendar_service is None:
     st.info("Please authenticate with Google Calendar to unlock scheduling features.")
     if st.button("Login with Google"):
         with st.spinner("Authenticating..."):
-            st.session_state.calendar_service = calendar_utils.authenticate_google_calendar()
-            st.rerun()
+            try:
+                st.session_state.calendar_service = calendar_utils.authenticate_google_calendar()
+                if st.session_state.calendar_service:
+                    st.success("Successfully authenticated with Google Calendar!")
+                    st.rerun()
+                else:
+                    st.error("Failed to authenticate with Google Calendar.")
+            except Exception as e:
+                st.error(f"Authentication error: {e}")
     st.stop()
 
 # --- CHAT DISPLAY & PROCESSING ---
@@ -109,61 +124,132 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 def process_prompt(user_prompt):
+    """Process user input and handle AI responses with proper error handling"""
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
-    with st.spinner("Thinking..."):
+    with st.chat_message("assistant"):
+        response_placeholder = st.empty()
+        
         try:
-            # The model now automatically uses the system_instruction. No need to build a full_prompt.
+            # Add timeout for AI response
+            import time
+            start_time = time.time()
+            timeout = 30  # 30 seconds timeout
+            
+            # Send initial message to the AI
             response = st.session_state.chat_session.send_message(user_prompt)
             
-            # The function calling logic has to be re-introduced as the automatic one was not handling our complex flow
-            if response.candidates[0].content.parts[0].function_call:
-                function_call = response.candidates[0].content.parts[0].function_call
-                tool_name = function_call.name
-                args = {key: value for key, value in function_call.args.items()}
+            # --- FIX: IMPROVED FUNCTION CALLING WITH TIMEOUT ---
+            # Check if the AI wants to call a function
+            if (response.candidates and 
+                len(response.candidates) > 0 and 
+                response.candidates[0].content.parts and 
+                len(response.candidates[0].content.parts) > 0):
                 
-                tool_to_call = next((t for t in [calendar_utils.add_event, calendar_utils.get_todays_events, calendar_utils.check_for_conflicts] if t.__name__ == tool_name), None)
-
-                if tool_to_call:
-                    tool_response = tool_to_call(**args)
+                first_part = response.candidates[0].content.parts[0]
+                
+                # Check if it's a function call
+                if hasattr(first_part, 'function_call') and first_part.function_call:
+                    function_call = first_part.function_call
+                    tool_name = function_call.name
+                    args = dict(function_call.args)
                     
-                    # Send the tool's response back to the model to get a natural language summary
-                    response = st.session_state.chat_session.send_message(
-                        content=genai.Content(
-                            parts=[genai.Part(
+                    response_placeholder.markdown(f"🔄 Calling {tool_name.replace('_', ' ')}...")
+                    
+                    # Map function names to actual functions
+                    function_map = {
+                        'add_event': calendar_utils.add_event,
+                        'get_todays_events': calendar_utils.get_todays_events,
+                        'check_for_conflicts': calendar_utils.check_for_conflicts
+                    }
+                    
+                    if tool_name in function_map:
+                        try:
+                            # Call the function with timeout protection
+                            if time.time() - start_time > timeout:
+                                raise TimeoutError("Function call timed out")
+                                
+                            response_placeholder.markdown(f"⚙️ Executing {tool_name.replace('_', ' ')}...")
+                            tool_response = function_map[tool_name](**args)
+                            
+                            response_placeholder.markdown("🤔 Processing results...")
+                            
+                            # --- SIMPLIFIED FUNCTION RESPONSE HANDLING ---
+                            # Create function response for the AI
+                            function_response_parts = [genai.Part(
                                 function_response=genai.protos.FunctionResponse(
                                     name=tool_name,
                                     response={"result": str(tool_response)}
                                 )
                             )]
-                        )
-                    )
-                    
-                    # Award points after a successful 'add_event' call
-                    if tool_name == "add_event" and "successfully" in str(tool_response):
-                         gamification_feedback = gamification.award_xp(gamification.XP_PER_TASK_SCHEDULED, "task")
-                         # Append gamification feedback to the AI's response
-                         response.parts[0].text += f"\n\n*{gamification_feedback}*"
+                            
+                            # Send function result back to AI with timeout check
+                            if time.time() - start_time > timeout:
+                                raise TimeoutError("AI response timed out")
+                                
+                            final_response = st.session_state.chat_session.send_message(
+                                genai.Content(parts=function_response_parts)
+                            )
+                            
+                            if final_response and final_response.text:
+                                assistant_response = final_response.text
+                            else:
+                                # Fallback if AI doesn't respond properly
+                                if tool_name == "get_todays_events":
+                                    assistant_response = f"Here's what I found for today:\n\n{tool_response}"
+                                elif tool_name == "add_event":
+                                    assistant_response = f"Event scheduling result: {tool_response}"
+                                elif tool_name == "check_for_conflicts":
+                                    assistant_response = f"Conflict check result: {tool_response}"
+                                else:
+                                    assistant_response = f"Function {tool_name} completed: {tool_response}"
+                            
+                            # Award points for successful task scheduling
+                            if tool_name == "add_event" and ("successfully" in str(tool_response).lower() or "added" in str(tool_response).lower()):
+                                gamification_feedback = gamification.award_xp(gamification.XP_PER_TASK_SCHEDULED, "task")
+                                assistant_response += f"\n\n*{gamification_feedback}*"
+                                
+                        except TimeoutError:
+                            assistant_response = f"The {tool_name.replace('_', ' ')} operation is taking too long. Please try again."
+                        except Exception as func_error:
+                            # Handle function execution errors gracefully
+                            st.error(f"Error executing {tool_name}: {str(func_error)}")
+                            assistant_response = f"I encountered an issue while trying to {tool_name.replace('_', ' ')}: {str(func_error)}"
+                    else:
+                        assistant_response = f"I tried to use an unknown function: {tool_name}. Please try rephrasing your request."
+                
+                # Handle regular text responses
+                elif hasattr(first_part, 'text') and first_part.text:
+                    assistant_response = first_part.text
+                else:
+                    assistant_response = "I'm not sure how to respond to that. Could you please rephrase your request?"
             
-            assistant_response = response.text
+            # --- HANDLE EMPTY OR MALFORMED RESPONSES ---
+            else:
+                assistant_response = "I'm having trouble understanding your request. Could you please try again?"
 
         except Exception as e:
-            # --- FIX 2: IMPROVED ERROR DISPLAY FOR DEBUGGING ---
-            # This will now show the full error in the app UI, so we are not blind.
-            st.exception(e)
-            assistant_response = "Sorry, I ran into a problem. Please try rephrasing your request."
+            # --- COMPREHENSIVE ERROR HANDLING ---
+            st.error(f"An error occurred: {str(e)}")
+            assistant_response = "I'm experiencing some technical difficulties. Please try again in a moment."
 
+        # Display the final response
+        response_placeholder.markdown(assistant_response)
         st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-        st.rerun()
 
 # --- INPUT HANDLING ---
 st.sidebar.header("Voice Assistant 🎤")
 if st.sidebar.button("Talk to FocusFlow"):
-    transcribed_text = audio_utils.transcribe_audio_from_mic()
-    if transcribed_text:
-        process_prompt(transcribed_text)
+    try:
+        transcribed_text = audio_utils.transcribe_audio_from_mic()
+        if transcribed_text:
+            process_prompt(transcribed_text)
+        else:
+            st.sidebar.warning("No audio detected. Please try again.")
+    except Exception as e:
+        st.sidebar.error(f"Voice recognition error: {e}")
 
 if text_prompt := st.chat_input("Schedule a task, ask about your day, or just say hi!"):
     process_prompt(text_prompt)
