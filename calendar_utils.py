@@ -11,6 +11,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import pytz
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 CREDENTIALS_FILE = "credentials.json"
@@ -44,13 +45,23 @@ def get_todays_events():
     service = st.session_state.get("calendar_service")
     if not service: return "Error: Not authenticated."
     try:
-        now = dt.datetime.now(timezone.utc)
-        time_min = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        time_max = now.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
+        # Get user's timezone
+        user_tz_str = st.session_state.get('user_profile', {}).get('timezone', 'UTC')
+        user_tz = pytz.timezone(user_tz_str)
+        
+        # Get today's date in user's timezone
+        now_user_tz = dt.datetime.now(user_tz)
+        start_of_day = now_user_tz.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = now_user_tz.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # Convert to UTC for API call
+        time_min = start_of_day.astimezone(timezone.utc).isoformat()
+        time_max = end_of_day.astimezone(timezone.utc).isoformat()
+        
         events = service.events().list(calendarId='primary', timeMin=time_min, timeMax=time_max, singleEvents=True, orderBy='startTime').execute().get('items', [])
         if not events:
             return "No events found for today."
-        event_list = [f"- **{event['summary']}** ({dt.datetime.fromisoformat(event['start'].get('dateTime', event['start'].get('date')).replace('Z', '+00:00')).astimezone().strftime('%I:%M %p')})" for event in events]
+        event_list = [f"- **{event['summary']}** ({dt.datetime.fromisoformat(event['start'].get('dateTime', event['start'].get('date')).replace('Z', '+00:00')).astimezone(user_tz).strftime('%I:%M %p')})" for event in events]
         return "Here is your schedule for today:\n" + "\n".join(event_list)
     except Exception as e:
         return f"A system error occurred while fetching events: {e}"
@@ -65,7 +76,7 @@ def check_for_conflicts(start_time, end_time):
     else:
         return f"You already have '{events[0]['summary']}' scheduled at this time."
 
-# --- FIX 1: REFACTORED AND SMARTER add_event FUNCTION ---
+# --- FIX: PROPER TIMEZONE HANDLING IN add_event FUNCTION ---
 def add_event(summary, start_time, end_time, description=None, location=None):
     """
     Adds an event after checking for conflicts. This is the only scheduling function
@@ -75,25 +86,51 @@ def add_event(summary, start_time, end_time, description=None, location=None):
     if not service: return "Error: Not authenticated."
 
     try:
+        # Get user's timezone
+        user_tz_str = st.session_state.get('user_profile', {}).get('timezone', 'UTC')
+        user_tz = pytz.timezone(user_tz_str)
+        
+        # Parse the input times and ensure they're in the user's timezone
+        try:
+            # Parse the datetime strings
+            start_dt = dt.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            end_dt = dt.datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            
+            # If the times are in UTC, convert them to user's timezone
+            if start_dt.tzinfo == timezone.utc:
+                start_dt = start_dt.astimezone(user_tz)
+                end_dt = end_dt.astimezone(user_tz)
+            elif start_dt.tzinfo is None:
+                # If naive datetime, assume it's in user's timezone
+                start_dt = user_tz.localize(start_dt)
+                end_dt = user_tz.localize(end_dt)
+            
+            # Convert back to ISO format with proper timezone
+            start_time_corrected = start_dt.isoformat()
+            end_time_corrected = end_dt.isoformat()
+            
+        except Exception as parse_error:
+            return f"❌ Error parsing time format: {parse_error}. Please use ISO format with timezone."
+
         # Step 1: Internally check for conflicts before doing anything.
-        conflict = check_for_conflicts(start_time, end_time)
+        conflict = check_for_conflicts(start_time_corrected, end_time_corrected)
         if conflict:
             # If a conflict exists, stop and return the conflict message.
             return f"❌ Conflict detected. {conflict}. Please ask the user if they want to schedule it anyway or choose a different time."
 
         # Step 2: If no conflict, proceed to create the event.
-        user_tz = st.session_state.get('user_profile', {}).get('timezone', 'America/New_York')
         event = {
-            'summary': summary, 'location': location,
+            'summary': summary, 
+            'location': location,
             'description': description or 'Scheduled by FocusFlow V2',
-            'start': {'dateTime': start_time, 'timeZone': user_tz},
-            'end': {'dateTime': end_time, 'timeZone': user_tz},
+            'start': {'dateTime': start_time_corrected, 'timeZone': user_tz_str},
+            'end': {'dateTime': end_time_corrected, 'timeZone': user_tz_str},
             'reminders': {'useDefault': True},
         }
         
         created_event = service.events().insert(calendarId='primary', body=event).execute()
         # The success message MUST start with this emoji for the gamification to work.
-        return f"✅ Event '{summary}' was successfully added to your calendar."
+        return f"✅ Event '{summary}' was successfully added to your calendar for {start_dt.strftime('%I:%M %p')} to {end_dt.strftime('%I:%M %p')} ({user_tz_str})."
     
     except HttpError as error:
         return f"❌ Failed to create event. Google Calendar API Error: {error}. The timestamp format might be wrong."
