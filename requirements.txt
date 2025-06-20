@@ -9,3 +9,6 @@ pyaudio
 gTTS
 pydub
 Pillow
+flask
+twilio
+ngrok 
