@@ -90,27 +90,26 @@ def add_event(summary, start_time, end_time, description=None, location=None):
         user_tz_str = st.session_state.get('user_profile', {}).get('timezone', 'UTC')
         user_tz = pytz.timezone(user_tz_str)
         
-        # Parse the input times and ensure they're in the user's timezone
+        # Parse the input times - the AI is likely passing times in user timezone already
         try:
-            # Parse the datetime strings
-            start_dt = dt.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-            end_dt = dt.datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            # Remove any timezone info and parse as naive datetime
+            clean_start_time = start_time.replace('Z', '').split('+')[0].split('-')[0] if '+' in start_time or start_time.endswith('Z') else start_time.split('+')[0]
+            clean_end_time = end_time.replace('Z', '').split('+')[0].split('-')[0] if '+' in end_time or end_time.endswith('Z') else end_time.split('+')[0]
             
-            # If the times are in UTC, convert them to user's timezone
-            if start_dt.tzinfo == timezone.utc:
-                start_dt = start_dt.astimezone(user_tz)
-                end_dt = end_dt.astimezone(user_tz)
-            elif start_dt.tzinfo is None:
-                # If naive datetime, assume it's in user's timezone
-                start_dt = user_tz.localize(start_dt)
-                end_dt = user_tz.localize(end_dt)
+            # Parse as naive datetime first
+            start_dt_naive = dt.datetime.fromisoformat(clean_start_time.split('+')[0].split('Z')[0])
+            end_dt_naive = dt.datetime.fromisoformat(clean_end_time.split('+')[0].split('Z')[0])
             
-            # Convert back to ISO format with proper timezone
+            # Localize to user's timezone (assuming AI provided time is in user's local time)
+            start_dt = user_tz.localize(start_dt_naive)
+            end_dt = user_tz.localize(end_dt_naive)
+            
+            # Format for Google Calendar API
             start_time_corrected = start_dt.isoformat()
             end_time_corrected = end_dt.isoformat()
             
         except Exception as parse_error:
-            return f"❌ Error parsing time format: {parse_error}. Please use ISO format with timezone."
+            return f"❌ Error parsing time format: {parse_error}. Received start_time: {start_time}, end_time: {end_time}"
 
         # Step 1: Internally check for conflicts before doing anything.
         conflict = check_for_conflicts(start_time_corrected, end_time_corrected)

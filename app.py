@@ -85,15 +85,20 @@ if st.session_state.chat_session is None:
 
 Current date/time: {current_time.strftime('%Y-%m-%d %H:%M')} ({user_tz_str})
 
-RULES:
-1. For scheduling requests: Call add_event with summary, start_time, end_time in ISO format
-2. For schedule viewing: Call get_todays_events
-3. Always use the user's timezone: {user_tz_str}
-4. If information is missing, ask for it briefly
+CRITICAL TIMEZONE RULE: 
+- User is in {user_tz_str} timezone
+- When user says "8 PM today", that means 8 PM in {user_tz_str}
+- Always create times as if they are LOCAL times in {user_tz_str}
+- Use simple ISO format without timezone suffix: YYYY-MM-DDTHH:MM:SS
 
-Example times in ISO format:
-- Today 2:00 PM = {current_time.replace(hour=14, minute=0, second=0).isoformat()}
-- Today 3:30 PM = {current_time.replace(hour=15, minute=30, second=0).isoformat()}"""
+RULES:
+1. For scheduling: Call add_event with summary, start_time, end_time 
+2. For viewing schedule: Call get_todays_events
+3. If info missing, ask briefly
+
+Examples for TODAY ({current_time.strftime('%Y-%m-%d')}):
+- "8 PM today" = {current_time.replace(hour=20, minute=0, second=0).strftime('%Y-%m-%dT%H:%M:%S')}
+- "2:30 PM today" = {current_time.replace(hour=14, minute=30, second=0).strftime('%Y-%m-%dT%H:%M:%S')}"""
         
         model = genai.GenerativeModel(
             model_name="gemini-1.5-flash-latest", 
