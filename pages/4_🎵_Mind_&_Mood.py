@@ -3,71 +3,69 @@ import streamlit as st
 from datetime import datetime, timedelta
 import random
 
+# Import from the core directory
 from core import spotify_utils
 
-st.set_page_config(page_title="Mind & Mood", page_icon="🎵")
+# --- PAGE CONFIGURATION ---
+st.set_page_config(page_title="Mind & Mood", page_icon="🎵", layout="wide")
+
 st.title("🎵 Mind & Mood")
 st.write("Check in with your feelings. A little music can make a big difference.")
 
 # --- INITIALIZATION ---
-# Initialize session state for this page
+# Initialize session state variables specific to this page if they don't exist
 if 'mood_log' not in st.session_state:
     st.session_state.mood_log = []
 if 'last_mood_suggestion' not in st.session_state:
     st.session_state.last_mood_suggestion = None
-if 'spotify_client' not in st.session_state:
-    st.session_state.spotify_client = None
 
-# Get the auth manager. This is cached and only created once.
-auth_manager = spotify_utils.get_spotify_auth_manager()
+# --- AUTHENTICATION CHECK ---
+# The main app.py now handles the login. This page just checks for the result.
+# If the spotify_client object doesn't exist in the session state, the user is not logged in.
+if "spotify_client" not in st.session_state or st.session_state.spotify_client is None:
+    st.warning("To get music recommendations, you need to connect your Spotify account.")
+    st.info("Please go to the main 'FocusFlow - Chat' page to log in to Spotify.")
+    # Provide a convenient button to navigate back to the main page
+    st.link_button("Go to Login Page", "/", type="primary")
+    st.stop() # Halt execution of this page until the user is logged in
 
-# --- AUTHENTICATION FLOW ---
-# Check if we have an authenticated client in our session state
-if st.session_state.spotify_client is None:
-    # Get the URL parameters from the redirect
-    query_params = st.query_params
-    auth_code = query_params.get("code")
-
-    # State 1: User needs to log in
-    if not auth_code:
-        auth_url = auth_manager.get_authorize_url()
-        st.warning("To get music recommendations, you need to connect to Spotify.")
-        # Use st.link_button for a clean, direct link
-        st.link_button("Login to Spotify", auth_url, type="primary")
-        st.stop() # Stop the script until the user logs in
-
-    # State 2: User has logged in, and Spotify has redirected back with a code
-    else:
-        with st.spinner("Connecting to Spotify..."):
-            try:
-                # Exchange the code for an access token
-                token_info = auth_manager.get_access_token(auth_code, as_dict=False)
-                # Create the client and save it to the session state
-                st.session_state.spotify_client = spotipy.Spotify(auth_manager=auth_manager)
-                # Clear the query params from the URL for a clean look
-                st.query_params.clear()
-                st.rerun() # Rerun the script to show the main page
-            except Exception as e:
-                st.error("Authentication failed. Please try logging in again.")
-                st.exception(e)
-                st.stop()
-
-
-# --- MAIN APP LOGIC (This only runs if authentication is successful) ---
-st.success("Successfully connected to Spotify!")
-
-# Agentic Step: Check for persistent negative mood
-# ... (This logic is correct and does not need changes)
-negative_moods_in_last_3_days = 0
-three_days_ago = datetime.now() - timedelta(days=3)
-for log in st.session_state.mood_log:
-    if log['timestamp'] > three_days_ago and log['mood'] in ["😔 Stressed", "😠 Frustrated"]:
-        negative_moods_in_last_3_days += 1
-if negative_moods_in_last_3_days >= 3:
-    st.info("A note from your FocusFlow Coach...") # Your message here
-
+# --- MAIN PAGE LOGIC (This only runs if authentication is successful) ---
+st.success("✓ Connected to Spotify! Let's find some tunes.")
 st.divider()
 
+# --- AGENTIC STEP: Proactive Mental Health Check-in ---
+# This feature demonstrates the agent's ability to notice patterns and offer help.
+try:
+    negative_mood_count = 0
+    three_days_ago = datetime.now() - timedelta(days=3)
+    
+    # Iterate through the mood log to find recent negative moods
+    for log in st.session_state.mood_log:
+        # Ensure log entries have the expected keys
+        if 'timestamp' in log and 'mood' in log:
+            if log['timestamp'] > three_days_ago and log['mood'] in ["😔 Stressed", "😠 Frustrated"]:
+                negative_mood_count += 1
+
+    # If 3 or more negative moods are logged in the last 3 days, show a message
+    if negative_mood_count >= 3:
+        st.info(
+            """
+            **A note from your FocusFlow Coach...**
+            
+            "Hey, I've noticed things might have been a bit tough recently. Remember that it's completely okay to not be okay, and taking a moment to talk to someone can make a world of difference. Your well-being is the top priority."
+            
+            *Here are some helpful resources if you ever feel like reaching out (examples):*
+            - [BetterHelp Online Counseling](https://www.betterhelp.com/)
+            - [7 Cups - Free Online Therapy & Chat](https://www.7cups.com/)
+            """
+        )
+        st.divider()
+except Exception as e:
+    # This prevents the app from crashing if the mood_log format is ever unexpected
+    print(f"Error processing mood log for agentic check-in: {e}")
+
+
+# --- MOOD SELECTION UI ---
 st.subheader("How are you feeling right now?")
 mood_options = {
     "😄 Happy": {"query": ["happy", "upbeat", "good vibes"]},
@@ -79,23 +77,36 @@ mood_options = {
 
 cols = st.columns(len(mood_options))
 selected_mood = None
+
+# Display mood buttons
 for i, (mood, props) in enumerate(mood_options.items()):
     if cols[i].button(mood, use_container_width=True):
         selected_mood = mood
+        # Log the mood with its timestamp
         st.session_state.mood_log.append({"mood": mood, "timestamp": datetime.now()})
-        st.toast(f"Mood logged as: {mood}", icon=mood.split(" ")[0])
+        st.toast(f"Mood logged: {mood.split(' ')[0]}", icon=mood.split(" ")[0])
 
+# --- SPOTIFY PLAYLIST LOGIC ---
+# This block runs only when a mood button is clicked
 if selected_mood:
+    # Get a random search term from the list to vary the playlists
     query_term = random.choice(mood_options[selected_mood]['query'])
+    
     with st.spinner(f"Finding the perfect '{query_term}' playlist for you..."):
-        # Use the client from the session state
+        # Use the spotify_client object that was created on the main page
         embed_url, playlist_name = spotify_utils.find_playlist(st.session_state.spotify_client, query_term)
+        
         if embed_url:
             st.session_state.last_mood_suggestion = (embed_url, playlist_name)
         else:
-            st.error(f"Could not find a playlist for '{query_term}'.")
+            st.error(f"Could not find a playlist for '{query_term}'. Please try another mood!")
+            st.session_state.last_mood_suggestion = None
+        
+        # Rerun to immediately display the playlist or clear the old one
+        st.rerun()
 
+# Display the last found playlist
 if st.session_state.last_mood_suggestion:
     embed_url, playlist_name = st.session_state.last_mood_suggestion
     st.subheader(f"Here's a playlist for you: *{playlist_name}*")
-    st.components.v1.iframe(embed_url, height=380)
+    st.components.v1.iframe(embed_url, height=380, scrolling=True)
