@@ -19,3 +19,4 @@ google-cloud-speech
 # ... (all your existing libraries) ...
 toml
 spotipy
+gtts
