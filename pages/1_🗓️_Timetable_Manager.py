@@ -70,14 +70,14 @@ if st.session_state.timetable_df is not None:
                     if days_ahead < 0: days_ahead += 7
                     event_date = today + timedelta(days=days_ahead)
                     
-                    start_datetime_str = f"{event_date.strftime('%Y-%m-%d')}T{row['start_time']}:00"
+                    start_datetime_str = f"{event_date.strftime('%Y-%m-%d')}T{row['start_time_str']}:00"
                     end_datetime_str = f"{event_date.strftime('%Y-%m-%d')}T{row['end_time']}:00"
 
                     # For simplicity, we are adding non-recurring events for the next upcoming day.
                     # A full implementation would add recurring events.
                     calendar_utils.add_event(
                         summary=row['subject'],
-                        start_time=start_datetime_str,
+                        start_time_str=start_datetime_str,
                         end_time=end_datetime_str,
                         description="Recurring class from timetable."
                     )
