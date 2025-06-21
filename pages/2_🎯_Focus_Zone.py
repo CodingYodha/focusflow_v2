@@ -5,7 +5,7 @@ import time
 # Import utilities from the main app directory
 import sys
 sys.path.append('..')
-import gamification
+from core import gamification_utils
 
 st.set_page_config(page_title="Focus Zone", page_icon="🎯")
 
