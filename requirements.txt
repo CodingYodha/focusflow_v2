@@ -4,11 +4,17 @@ google-generativeai
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
-speechrecognition
+pytz
+requests
+# For Streamlit's voice input
 pyaudio
-gTTS
-pydub
-Pillow
-flask
-twilio
-ngrok 
+speechrecognition
+# For the Telegram Agent
+quart
+python-telegram-bot
+ngrok
+# For Telegram's voice note transcription
+google-cloud-speech
+# requirements.txt
+# ... (all your existing libraries) ...
+toml
