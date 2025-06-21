@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import sys
 sys.path.append('..')
 import timetable_parser
-import calendar_utils
+from core import calendar_utils
 
 st.set_page_config(page_title="Timetable Manager", page_icon="🗓️")
 
