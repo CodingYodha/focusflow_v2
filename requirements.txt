@@ -18,3 +18,4 @@ google-cloud-speech
 # requirements.txt
 # ... (all your existing libraries) ...
 toml
+spotipy
