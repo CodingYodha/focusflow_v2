@@ -6,24 +6,25 @@ from datetime import datetime, timedelta
 
 # Import utilities from the main app directory
 import sys
-sys.path.append('..')
-import timetable_parser
-from core import calendar_utils
+# This is a common pattern to ensure modules in the parent directory can be found
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from core import calendar_utils, timetable_parser
 
 st.set_page_config(page_title="Timetable Manager", page_icon="🗓️")
 
-# Initialize session state for timetable
-if 'timetable_df' not in st.session_state:
-    st.session_state.timetable_df = None
-
 st.title("🗓️ Timetable Manager")
+
 # Check for authentication from the main app
 if 'calendar_service' not in st.session_state or st.session_state.calendar_service is None:
-    st.warning("Please authenticate on the main 'FocusFlow - Chat' page first to use this feature.")
+    st.warning("Please connect to Google Calendar on the main 'FocusFlow - Chat' page first to use this feature.")
+    st.link_button("Go to Login Page", "/")
     st.stop()
     
 st.write("Upload an image of your class schedule, and I'll help you digitize it!")
 
+# Initialize session state for the timetable DataFrame
+if 'timetable_df' not in st.session_state:
+    st.session_state.timetable_df = None
 
 uploaded_file = st.file_uploader(
     "Choose a timetable image...", type=["jpg", "jpeg", "png"]
@@ -44,7 +45,7 @@ if uploaded_file is not None:
                 st.session_state.timetable_df = df
                 st.success("Successfully extracted your schedule!")
             except (json.JSONDecodeError, KeyError) as e:
-                st.error("The AI couldn't read the schedule properly. Please try a clearer image.")
+                st.error("The AI couldn't read the schedule properly. Please try a clearer image or a different format.")
                 st.code(raw_response) # Show what the AI returned for debugging
 
 if st.session_state.timetable_df is not None:
@@ -63,26 +64,38 @@ if st.session_state.timetable_df is not None:
             }
             today = datetime.now()
             
+            # Get the necessary context from the session state
+            service = st.session_state.calendar_service
+            user_tz = st.session_state.user_profile['timezone']
+
             for index, row in df.iterrows():
                 try:
                     # Calculate the date of the next occurrence of this day
-                    days_ahead = day_map[row['day']] - today.weekday()
+                    days_ahead = day_map[row['day'].capitalize()] - today.weekday()
                     if days_ahead < 0: days_ahead += 7
                     event_date = today + timedelta(days=days_ahead)
                     
-                    start_datetime_str = f"{event_date.strftime('%Y-%m-%d')}T{row['start_time_str']}:00"
+                    # --- FIX: Use the correct column names from the parser ---
+                    start_datetime_str = f"{event_date.strftime('%Y-%m-%d')}T{row['start_time']}:00"
                     end_datetime_str = f"{event_date.strftime('%Y-%m-%d')}T{row['end_time']}:00"
 
-                    # For simplicity, we are adding non-recurring events for the next upcoming day.
-                    # A full implementation would add recurring events.
-                    calendar_utils.add_event(
+                    # --- FIX: Pass ALL required arguments to the add_event function ---
+                    result = calendar_utils.add_event(
+                        service=service,
+                        user_timezone_str=user_tz,
                         summary=row['subject'],
                         start_time_str=start_datetime_str,
-                        end_time=end_datetime_str,
-                        description="Recurring class from timetable."
+                        end_time_str=end_datetime_str,
+                        description="Class from timetable."
                     )
-                    progress_bar.progress((index + 1) / total_events, text=f"Added '{row['subject']}'")
-                except Exception as e:
-                    st.error(f"Failed to add '{row['subject']}': {e}")
+                    
+                    # Check if the result indicates success before updating progress
+                    if result.startswith("✅"):
+                         progress_bar.progress((index + 1) / total_events, text=f"Added '{row['subject']}'")
+                    else:
+                        st.error(f"Failed to add '{row['subject']}': {result}")
 
-        st.success("All classes have been added to your calendar for the upcoming week!")
+                except Exception as e:
+                    st.error(f"Failed to process row for '{row.get('subject', 'Unknown Event')}': {e}")
+
+        st.success("Timetable processing complete!")
