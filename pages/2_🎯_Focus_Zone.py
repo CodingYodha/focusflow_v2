@@ -10,18 +10,14 @@ from core import gamification_utils
 
 st.set_page_config(page_title="Focus Zone", page_icon="🎯", layout="wide")
 
-# --- DEFINITIVE FIX: Initialize required state at the top of the page ---
-# This guarantees that gamification stats exist before they are accessed.
+# --- Initialize required state at the top of the page ---
 gamification_utils.initialize_gamification()
-
-# Also ensure the todos list itself is initialized for this page
 if 'todos' not in st.session_state:
     st.session_state.todos = []
 if 'timer_running' not in st.session_state:
     st.session_state.timer_running = False
 if 'duration_seconds' not in st.session_state:
     st.session_state.duration_seconds = 0
-# --- END OF FIX ---
 
 st.title("🎯 The Focus Zone")
 st.write("Complete your to-dos and use the focus timer to boost your productivity and level up!")
@@ -42,14 +38,16 @@ with col1:
     if not st.session_state.todos:
         st.info("Your to-do list is empty. Add a task to get started!")
     else:
-        # Iterate over a copy of the list to safely remove items
         for i, todo_item in enumerate(st.session_state.todos[:]):
             is_done = st.checkbox(todo_item["task"], key=todo_item["id"])
             if is_done:
                 st.session_state.todos.pop(i)
                 
-                # This will now work correctly because st.session_state.xp is guaranteed to exist
+                # --- THE DEFINITIVE FIX ---
+                # Increment BOTH the specific counter and the main "Tasks" counter
                 st.session_state.todos_completed = st.session_state.get('todos_completed', 0) + 1
+                st.session_state.tasks_completed = st.session_state.get('tasks_completed', 0) + 1 # <-- THIS IS THE FIX
+                
                 feedback = gamification_utils.award_xp(gamification_utils.XP_PER_TODO_COMPLETED, "todo")
                 
                 st.toast(f"Great job! {feedback}", icon="🎉")
